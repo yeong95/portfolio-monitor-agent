@@ -8,14 +8,18 @@ LangChain Agent 기반 주식 포트폴리오 자동 모니터링 시스템.
 ## 🏗️ 아키텍처
 
 ```
-포트폴리오 입력 (한국 + 미국 종목)
-        ↓
-LangChain Agent (Groq - LLaMA 3.3 70B)
-        ↓
+React 화면 (종목 선택/추가/삭제)
+        ↓ (axios HTTP 요청)
+FastAPI 서버 (api.py)
+        ↓ (await)
+LangChain Agent (agent.py)
+        ↓ (MCP 프로토콜)
 ┌─────────────────────────────────────┐
-│              Tools                   │
+│  stock MCP 서버                      │
 │  - get_us_stock_info (yfinance)      │
 │  - get_kr_stock_info (pykrx)         │
+├─────────────────────────────────────┤
+│  news MCP 서버                       │
 │  - get_stock_news    (NewsAPI)       │
 └─────────────────────────────────────┘
         ↓
@@ -23,6 +27,14 @@ LangChain Agent (Groq - LLaMA 3.3 70B)
         ↓
 텔레그램 Bot 전송
 ```
+
+### MCP 아키텍처를 선택한 이유
+
+초기에는 Tool을 Agent 코드 안에 직접 구현했으나, MCP 서버로 분리하면 다음과 같은 장점이 있습니다.
+
+- **재사용성** — 동일한 MCP 서버를 다른 Agent에서도 연결해서 사용 가능
+- **독립성** — Tool 로직 변경 시 Agent 코드 수정 불필요
+- **확장성** — 새로운 Tool 추가 시 MCP 서버만 수정하면 됨
 
 ---
 
@@ -32,6 +44,9 @@ LangChain Agent (Groq - LLaMA 3.3 70B)
 |---|---|---|
 | AI Framework | LangChain + LangGraph | Tool calling 기반 Agent 구현 |
 | LLM | Groq (LLaMA 3.3 70B) | 무료 tier, 빠른 응답속도 |
+| Agent 프로토콜 | MCP (Model Context Protocol) | Tool을 서버로 분리하여 재사용성 확보 |
+| 백엔드 | FastAPI | 비동기 API 서버 |
+| 프론트엔드 | React | 종목 관리 화면 |
 | 주가 (미국) | yfinance | 무료 Yahoo Finance API |
 | 주가 (한국) | pykrx | KRX 공식 데이터 |
 | 뉴스 | NewsAPI | 글로벌 뉴스 수집 |
@@ -44,12 +59,16 @@ LangChain Agent (Groq - LLaMA 3.3 70B)
 
 ```
 portfolio-monitor/
-├── main.py               # Agent 실행 및 스케줄러
+├── main.py               # 스케줄러 (매일 오전 9시 자동 실행)
+├── agent.py              # LangChain Agent + MCP 클라이언트
+├── api.py                # FastAPI 서버
 ├── .env                  # API 키 관리
-└── tools/
-    ├── stock_tool.py     # 주가 수집 Tool (한국/미국)
-    ├── news_tool.py      # 뉴스 수집 Tool
-    └── telegram_tool.py  # 텔레그램 전송
+├── mcp_servers/
+│   ├── stock_server.py   # 주가 수집 MCP 서버 (한국/미국)
+│   └── news_server.py    # 뉴스 수집 MCP 서버
+├── tools/
+│   └── telegram_tool.py  # 텔레그램 전송
+└── frontend/             # React 앱 (종목 선택 화면)
 ```
 
 ---
@@ -60,10 +79,10 @@ portfolio-monitor/
 ```bash
 python -m venv venv
 source venv/bin/activate
-pip install langchain langchain-groq langgraph langchain-google-genai
-pip install yfinance pykrx newsapi-python
+pip install langchain langchain-groq langgraph langchain-mcp-adapters
+pip install fastapi uvicorn yfinance pykrx
 pip install python-telegram-bot apscheduler python-dotenv
-pip install beautifulsoup4 requests
+pip install beautifulsoup4 requests mcp
 ```
 
 ### 2. 환경변수 설정
@@ -74,18 +93,21 @@ TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
 ```
 
-### 3. 종목 설정
-`main.py`에서 모니터링할 종목을 설정합니다.
-```python
-PORTFOLIO = {
-    "us": ["AAPL", "NVDA"],        # 미국 종목
-    "kr": ["005930", "000660"]     # 한국 종목 (삼성전자, SK하이닉스)
-}
+### 3. FastAPI 서버 실행
+```bash
+uvicorn api:app --reload
 ```
 
-### 4. 실행
+### 4. React 실행 (새 터미널)
 ```bash
-python main.py
+cd frontend
+npm install
+npm start
+```
+
+### 5. 브라우저 접속
+```
+http://localhost:3000
 ```
 
 ---
@@ -135,16 +157,30 @@ single positional indexer is out-of-bounds
 ```
 → 무료 tier 일일 한도 초과. Groq (LLaMA 3.3 70B) 로 LLM을 교체하여 해결. 속도도 더 빠름.
 
-### 네이버 금융 뉴스 크롤링 실패
-→ 네이버 금융이 JavaScript 렌더링 기반으로 변경되어 직접 크롤링 불가. NewsAPI로 대체.
+### MCP async with 컨텍스트 매니저 오류
+```
+NotImplementedError: MultiServerMCPClient cannot be used as a context manager
+```
+→ langchain-mcp-adapters 0.1.0부터 `async with` 방식 삭제. `await client.get_tools()` 방식으로 변경하여 해결.
+
+### FastAPI 이벤트 루프 충돌
+```
+RuntimeError: asyncio.run() cannot be called from a running event loop
+```
+→ FastAPI가 이미 async 환경이라 `asyncio.run()` 중복 호출 시 충돌 발생. `await agent.ainvoke()` 방식으로 변경하여 해결.
+
+### MCP Tool sync 호출 오류
+```
+NotImplementedError: StructuredTool does not support sync invocation
+```
+→ MCP Tool은 async 전용이라 `agent.invoke()` 대신 `await agent.ainvoke()`로 변경하여 해결.
 
 ---
 
 ## 🚀 향후 개선 계획
 
-- [ ] MCP 서버로 Tool 분리 (A2A 프로토콜 적용)
+- [x] MCP 서버로 Tool 분리
 - [ ] DART API 연동 (한국 공시 수집)
 - [ ] 등락률 임계값 기반 즉시 알림 (±5% 이상)
-- [ ] 종목 동적 추가/삭제 CLI
+- [ ] A2A 프로토콜 적용 (Agent 간 통신)
 - [ ] 클라우드 배포 (AWS Lambda or GCP Cloud Run)
-```
