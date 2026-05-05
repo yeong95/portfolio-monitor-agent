@@ -8,9 +8,10 @@ LangChain Agent 기반 주식 포트폴리오 자동 모니터링 시스템.
 ## 🏗️ 아키텍처
 
 ```
-React 화면 (종목 선택/추가/삭제)
-        ↓ (axios HTTP 요청)
+React 화면 (로그인 / 종목 선택/추가/삭제)
+        ↓ (axios HTTP 요청 + JWT 토큰)
 FastAPI 서버 (api.py)
+        ↓ JWT 인증 → 사용자별 포트폴리오 (SQLite)
         ↓ (await)
 LangChain Agent (agent.py)
         ↓ (MCP 프로토콜)
@@ -46,6 +47,8 @@ LangChain Agent (agent.py)
 | LLM | Groq (LLaMA 3.3 70B) | 무료 tier, 빠른 응답속도 |
 | Agent 프로토콜 | MCP (Model Context Protocol) | Tool을 서버로 분리하여 재사용성 확보 |
 | 백엔드 | FastAPI | 비동기 API 서버 |
+| 인증 | JWT + bcrypt | 사용자별 포트폴리오 관리 |
+| DB | SQLite | 경량 로컬 DB, 설치 불필요 |
 | 프론트엔드 | React | 종목 관리 화면 |
 | 주가 (미국) | yfinance | 무료 Yahoo Finance API |
 | 주가 (한국) | pykrx | KRX 공식 데이터 |
@@ -61,14 +64,16 @@ LangChain Agent (agent.py)
 portfolio-monitor/
 ├── main.py               # 스케줄러 (매일 오전 9시 자동 실행)
 ├── agent.py              # LangChain Agent + MCP 클라이언트
-├── api.py                # FastAPI 서버
+├── api.py                # FastAPI 서버 (인증 + 포트폴리오 API)
+├── auth.py               # JWT 토큰 발급 / bcrypt 비밀번호 해싱
+├── database.py           # SQLite 초기화 (users, portfolios 테이블)
 ├── .env                  # API 키 관리
 ├── mcp_servers/
 │   ├── stock_server.py   # 주가 수집 MCP 서버 (한국/미국)
 │   └── news_server.py    # 뉴스 수집 MCP 서버
 ├── tools/
 │   └── telegram_tool.py  # 텔레그램 전송
-└── frontend/             # React 앱 (종목 선택 화면)
+└── frontend/             # React 앱 (로그인 / 종목 선택 화면)
 ```
 
 ---
@@ -83,6 +88,7 @@ pip install langchain langchain-groq langgraph langchain-mcp-adapters
 pip install fastapi uvicorn yfinance pykrx
 pip install python-telegram-bot apscheduler python-dotenv
 pip install beautifulsoup4 requests mcp
+pip install bcrypt "python-jose[cryptography]"
 ```
 
 ### 2. 환경변수 설정
@@ -91,6 +97,7 @@ GROQ_API_KEY=your_groq_api_key
 NEWSAPI_KEY=your_newsapi_key
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
+SECRET_KEY=your_jwt_secret_key   # JWT 서명용 임의 문자열
 ```
 
 ### 3. FastAPI 서버 실행
@@ -109,6 +116,15 @@ npm start
 ```
 http://localhost:3000
 ```
+
+---
+
+## 🔐 인증 흐름
+
+1. 첫 방문 시 회원가입 — 아이디/비밀번호 입력
+2. 로그인 성공 시 JWT 토큰 발급 → `localStorage` 저장
+3. 이후 모든 API 요청에 `Authorization: Bearer <token>` 헤더 포함
+4. 포트폴리오는 사용자별로 SQLite에 저장 — 종목 변경 시 1초 후 자동 저장
 
 ---
 
@@ -175,11 +191,19 @@ NotImplementedError: StructuredTool does not support sync invocation
 ```
 → MCP Tool은 async 전용이라 `agent.invoke()` 대신 `await agent.ainvoke()`로 변경하여 해결.
 
+### passlib + bcrypt 5.0 호환성 오류
+```
+ValueError: password cannot be longer than 72 bytes
+```
+→ passlib이 내부 버그 감지 테스트에서 bcrypt 5.0과 충돌. passlib 제거 후 `bcrypt` 직접 사용으로 해결.
+비밀번호는 SHA-256으로 사전 해싱하여 72바이트 제한 우회.
+
 ---
 
 ## 🚀 향후 개선 계획
 
 - [x] MCP 서버로 Tool 분리
+- [x] 사용자 인증 및 사용자별 포트폴리오 저장
 - [ ] DART API 연동 (한국 공시 수집)
 - [ ] 등락률 임계값 기반 즉시 알림 (±5% 이상)
 - [ ] A2A 프로토콜 적용 (Agent 간 통신)
