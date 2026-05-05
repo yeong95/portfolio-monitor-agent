@@ -20,7 +20,7 @@ class Portfolio(BaseModel):
 
 @app.post("/briefing")
 async def get_briefing(portfolio: Portfolio):
-    briefing = run_agent(portfolio.us_stocks, portfolio.kr_stocks)
+    briefing = await run_agent(portfolio.us_stocks, portfolio.kr_stocks)
     if portfolio.send_telegram:
         send_telegram_message(briefing)
     return {"briefing": briefing}
